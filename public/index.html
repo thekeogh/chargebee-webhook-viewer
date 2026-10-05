@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chargebee Webhook Viewer</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell" id="appShell">
+      <aside class="sidebar" aria-label="Webhook history">
+        <button class="collapse-button" id="collapseSidebarButton" type="button" title="Collapse sidebar" aria-label="Collapse sidebar">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+        </button>
+
+        <header class="sidebar-header">
+          <div>
+            <h1>Chargebee Webhook Viewer</h1>
+          </div>
+          <div class="sidebar-actions">
+            <button class="icon-button" id="collapseAllGroupsButton" type="button" title="Collapse event hierarchy" aria-label="Collapse event hierarchy">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m7 10 5-5 5 5" />
+                <path d="m7 18 5-5 5 5" />
+              </svg>
+            </button>
+            <button class="icon-button danger" id="clearAllButton" type="button" title="Delete all webhooks" aria-label="Delete all webhooks">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 6h18" />
+                <path d="M8 6V4h8v2" />
+                <path d="M6 6l1 15h10l1-15" />
+                <path d="M10 11v6" />
+                <path d="M14 11v6" />
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        <details class="accordion-card controls-card" id="controlsAccordion">
+          <summary class="accordion-summary">
+            <span class="accordion-title">Chargebee controls</span>
+            <span class="accordion-chevron" aria-hidden="true"></span>
+          </summary>
+          <div class="accordion-body">
+            <section class="control-section">
+              <div class="control-section-head">
+                <span>ngrok tunnel</span>
+                <div class="listener-state">
+                  <span class="listener-dot" id="listenerDot"></span>
+                  <strong id="listenerStatus">Stopped</strong>
+                </div>
+              </div>
+              <div class="command-box">
+                <code id="tunnelCommand">ngrok http --config=/Users/keogh/Dropbox/System/ngrok.yml --host-header=rewrite --url=https://keogh-billing-backend.eu.ngrok.io http://localhost:4343</code>
+              </div>
+              <div class="command-box" title="Chargebee webhook URL"><code id="publicWebhookUrl">https://keogh-billing-backend.eu.ngrok.io/webhook</code>
+              </div>
+              <div class="control-actions">
+                <button class="text-button start" id="startListenerButton" type="button">Start</button>
+                <button class="text-button stop" id="stopListenerButton" type="button" disabled>Stop</button>
+              </div>
+              <details class="listener-log-panel">
+                <summary>Listener log</summary>
+                <pre id="listenerLog" class="listener-log">No listener output yet.</pre>
+              </details>
+            </section>
+            <section class="control-section">
+              <div class="control-section-head">
+                <span>Webhook forwarding</span>
+                <button class="text-button mini" id="resendButton" type="button" disabled title="Resend selected webhook to the forwarding URL">Resend</button>
+              </div>
+              <label class="field-label">
+                <span>Forward webhook to</span>
+                <input id="forwardWebhookUrlInput" class="settings-input" type="url" autocomplete="off" placeholder="https://billing-backend.dev.next.sc:7020/your-webhook-path" />
+              </label>
+            </section>
+          </div>
+        </details>
+
+        <ol class="event-list" id="eventList" aria-label="Received webhooks"></ol>
+        <div class="resize-handle" id="resizeHandle" role="separator" aria-orientation="vertical" aria-label="Resize sidebar"></div>
+      </aside>
+
+      <section class="viewer" aria-label="Selected webhook">
+        <header class="viewer-header">
+          <div class="title-group">
+            <p class="eyebrow" id="selectedTime">Waiting for webhook</p>
+            <h2 id="selectedTitle">No payload yet</h2>
+          </div>
+          <div class="viewer-actions">
+            <button class="action-button" id="copyBodyButton" type="button" disabled>Copy JSON</button>
+            <button class="action-button" id="copyObjectButton" type="button" disabled>Copy Content</button>
+          </div>
+        </header>
+
+        <details class="metadata-panel" id="metadataPanel">
+          <summary>
+            <span>Metadata</span>
+            <span id="metadataSummary">No request selected</span>
+          </summary>
+          <pre class="metadata-code" id="metadataCode"></pre>
+        </details>
+
+        <div class="payload-panel">
+          <div class="payload-toolbar">
+            <div class="tab-list" role="tablist" aria-label="Payload view">
+              <button class="tab-button active" id="originalTabButton" type="button" role="tab" aria-selected="true">Original</button>
+            </div>
+            <span class="payload-status" id="payloadStatus">Webhook payload</span>
+          </div>
+          <div class="editor-shell">
+            <div class="monaco-editor-host" id="jsonEditor"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="status-bar" aria-label="Application status">
+      <div class="status-bar-item">
+        <span class="listener-dot" id="footerListenerDot"></span>
+        <span id="footerListenerStatus">ngrok tunnel: stopped</span>
+      </div>
+      <div class="status-bar-item">
+        <span id="countLabel">0 hooks</span>
+      </div>
+      <div class="status-bar-item" id="forwardingStatus">Forwarding: off</div>
+
+    </footer>
+
+    <template id="eventItemTemplate">
+      <li class="event-item">
+        <div class="event-content">
+          <div class="event-title-row">
+            <span class="event-main"></span>
+          </div>
+          <input class="event-title-input" type="text" aria-label="Webhook name" />
+          <span class="event-sub"></span>
+        </div>
+        <div class="event-actions">
+          <button class="icon-button edit-title" type="button" title="Rename webhook" aria-label="Rename webhook">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" />
+            </svg>
+          </button>
+          <button class="icon-button delete-one" type="button" title="Delete webhook" aria-label="Delete webhook">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 6h18" />
+              <path d="M8 6V4h8v2" />
+              <path d="M6 6l1 15h10l1-15" />
+              <path d="M10 11v6" />
+              <path d="M14 11v6" />
+            </svg>
+          </button>
+        </div>
+      </li>
+    </template>
+
+    <template id="eventGroupTemplate">
+      <details class="event-group">
+        <summary class="event-group-summary">
+          <span class="event-group-title"></span>
+          <span class="event-group-count"></span>
+          <span class="event-group-chevron" aria-hidden="true"></span>
+        </summary>
+        <ol class="event-group-list"></ol>
+      </details>
+    </template>
+
+    <script src="/monaco/vs/loader.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

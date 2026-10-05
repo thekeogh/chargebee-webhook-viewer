@@ -1,0 +1,29 @@
+{
+  "name": "chargebee-webhook-viewer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local Chargebee PC2 webhook payload viewer.",
+  "main": "build/server.js",
+  "packageManager": "pnpm@10.33.3",
+  "scripts": {
+    "build": "tsc && pnpm run copy:static",
+    "build:watch": "concurrently --kill-others-on-fail --names types,static --prefix-colors cyan,magenta \"tsc --watch --preserveWatchOutput\" \"chokidar 'public/**/*.{html,css,svg}' -c 'pnpm run copy:static'\"",
+    "copy:static": "node scripts/copy-static.mjs",
+    "start": "pnpm run build && node build/server.js",
+    "start:watch": "node --watch --watch-preserve-output build/server.js",
+    "dev": "pnpm run build && concurrently --kill-others-on-fail --names build,server --prefix-colors cyan,green \"pnpm run build:watch\" \"pnpm run start:watch\""
+  },
+  "engines": {
+    "node": ">=24.21.0 <25"
+  },
+  "dependencies": {
+    "@fontsource/ubuntu-sans-mono": "5.2.10",
+    "monaco-editor": "0.53.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "chokidar-cli": "^3.0.0",
+    "concurrently": "^10.0.5",
+    "typescript": "^7.0.2"
+  }
+}
