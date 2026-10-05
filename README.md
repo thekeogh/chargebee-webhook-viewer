@@ -45,21 +45,32 @@ path except its own control API routes. Your old backend path can remain in
 Chargebee. The tunnel now points at the viewer, which can then forward to your
 backend. Only one ngrok process should own this reserved domain at a time.
 
-Incoming Basic Auth is accepted without validation and retained for forwarding.
+Incoming Basic Auth is accepted without validation. Outgoing authentication is
+configured separately for each forwarding URL.
 No Chargebee API key is required. Stripe expansion controls are omitted.
 
 ## Forward and resend
 
-Enter the **full backend webhook URL**, including its path, under **Forward
-webhook to**. Leave it empty to disable automatic forwarding.
+Enter **full backend webhook URLs**, including their paths, under **Forward
+webhook to**. Starts with one row; use **+** and **−** to add/remove destinations.
+Blank URLs are ignored. All URLs blank disables automatic forwarding.
 
-Every received hook is acknowledged immediately and forwarded asynchronously.
-**Resend** sends the currently selected stored hook to the current forwarding
-URL, including after a page reload or app restart. It does not create another
+Each URL has a collapsed **Basic Auth** section with **Username** and **Password**
+fields. When both are filled, that destination receives its own Basic Auth
+header for automatic deliveries and Resend. If either is empty, no Authorization
+header is sent, including any incoming Chargebee Authorization header.
+Credentials persist locally alongside forwarding settings; passwords are masked
+in the UI and excluded from status broadcasts and delivery results.
+
+Every received hook is acknowledged immediately and forwarded asynchronously
+to all nonempty URLs. Destinations receive independent requests in parallel; a
+failure at one does not prevent delivery to the others. Each row shows its latest
+result; the footer summarizes successful/failed deliveries.
+**Resend** sends the currently selected stored hook to all current forwarding
+URLs, including after a page reload or app restart. It does not create another
 history entry.
 
-Forwarding and resends preserve the original raw JSON text, authorization and
-other usable headers, and the original query string (including encoding,
+Forwarding and resends preserve the original raw JSON text, other usable headers, and the original query string (including encoding,
 duplicate keys and order). Query parameters already in the destination URL are
 retained. The configured destination determines the host and path; transport
 headers such as Host and Content-Length are regenerated. A viewer relay marker
@@ -80,7 +91,8 @@ supported. Delivery status appears in the footer.
 
 History is stored in your browser; the server does not write payloads to disk.
 If browser storage fills, the viewer retains the latest 100 or 25 hooks.
-The forwarding URL is stored locally in `data/forwarding.json` (gitignored).
+The forwarding URLs and credentials are stored locally in `data/forwarding.json` (gitignored).
+Existing single-URL settings are migrated automatically.
 
 ## Configuration
 

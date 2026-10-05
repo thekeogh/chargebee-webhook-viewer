@@ -1075,3 +1075,68 @@ body.resizing-sidebar {
     flex-direction: column;
   }
 }
+
+.forwarding-url-list {
+  display: grid;
+  gap: 8px;
+}
+
+.forwarding-url-entry {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.forwarding-url-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px 26px;
+  align-items: center;
+  gap: 4px;
+}
+
+.forwarding-row-button {
+  width: 26px;
+  height: 26px;
+  border-color: var(--line);
+  color: var(--accent-cyan);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.forwarding-row-button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.forwarding-url-result {
+  color: var(--ok);
+  overflow-wrap: anywhere;
+  font-size: 0.7rem;
+  font-weight: 400;
+}
+
+.forwarding-url-result.failed {
+  color: var(--danger);
+}
+
+.forwarding-auth-panel {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 400;
+}
+
+.forwarding-auth-panel > summary {
+  cursor: pointer;
+  padding: 3px 0;
+}
+
+.forwarding-auth-panel > summary:hover {
+  color: var(--accent-cyan);
+}
+
+.forwarding-auth-fields {
+  display: grid;
+  gap: 7px;
+  padding: 7px 0 4px;
+}

@@ -9,6 +9,8 @@ const PREFIX_OPEN_KEY_PREFIX = "keogh.chargebeeWebhookViewer.prefixOpen.";
 const GROUP_ORDER_STORAGE_KEY = "keogh.chargebeeWebhookViewer.groupOrder.v1";
 const EVENT_ORDER_KEY_PREFIX = "keogh.chargebeeWebhookViewer.eventOrder.";
 const FORWARD_WEBHOOK_URL_STORAGE_KEY = "keogh.chargebeeWebhookViewer.forwardWebhookUrl.v1";
+const FORWARD_WEBHOOK_URLS_STORAGE_KEY = "keogh.chargebeeWebhookViewer.forwardWebhookUrls.v1";
+const FORWARD_WEBHOOK_AUTH_STORAGE_KEY = "keogh.chargebeeWebhookViewer.forwardWebhookAuth.v1";
 const MAX_EVENTS = 500;
 
 const els: Record<string, any> = {
@@ -25,7 +27,7 @@ const els: Record<string, any> = {
   copyObjectButton: document.querySelector("#copyObjectButton"),
   collapseAllGroupsButton: document.querySelector("#collapseAllGroupsButton"),
   clearAllButton: document.querySelector("#clearAllButton"),
-  forwardWebhookUrlInput: document.querySelector("#forwardWebhookUrlInput"),
+  forwardingUrlList: document.querySelector("#forwardingUrlList"),
   payloadStatus: document.querySelector("#payloadStatus"),
   listenerDot: document.querySelector("#listenerDot"),
   listenerStatus: document.querySelector("#listenerStatus"),
@@ -54,7 +56,13 @@ let pendingEditorValue = "";
 let draggedGroupType = null;
 let draggedEventId = null;
 let forwardingSaveTimer = null;
-let forwardingState = { url: "", lastResult: null };
+let forwardingState = { urls: [""], lastResult: null };
+let forwardingUrls = loadStoredForwardingUrls();
+let forwardingAuth = loadStoredForwardingAuth();
+let forwardingServerSupportsBasicAuth = true;
+let forwardingEditVersion = 0;
+let forwardingSaveQueue = Promise.resolve();
+let forwardingServerSupportsMultipleUrls = true;
 let resending = false;
 const MIN_SIDEBAR_WIDTH = 390;
 
@@ -90,62 +98,250 @@ function saveEvents() {
   return false;
 }
 
+function loadStoredForwardingUrls() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(FORWARD_WEBHOOK_URLS_STORAGE_KEY) || "null");
+    if (Array.isArray(saved) && saved.length) return saved.map((url) => String(url || ""));
+  } catch {}
+  return [localStorage.getItem(FORWARD_WEBHOOK_URL_STORAGE_KEY) || ""];
+}
+
+function loadStoredForwardingAuth() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(FORWARD_WEBHOOK_AUTH_STORAGE_KEY) || "[]");
+    if (Array.isArray(saved)) return forwardingUrls.map((_, index) => ({ username: String(saved[index]?.username || ""), password: String(saved[index]?.password || "") }));
+  } catch {}
+  return forwardingUrls.map(() => ({ username: "", password: "" }));
+}
+
+function saveLocalForwardingUrls() {
+  localStorage.setItem(FORWARD_WEBHOOK_URLS_STORAGE_KEY, JSON.stringify(forwardingUrls));
+  localStorage.setItem(FORWARD_WEBHOOK_AUTH_STORAGE_KEY, JSON.stringify(forwardingAuth));
+}
+
 function loadSettings() {
-  els.forwardWebhookUrlInput.value = localStorage.getItem(FORWARD_WEBHOOK_URL_STORAGE_KEY) || "";
+  renderForwardingUrlRows();
+}
+
+function renderForwardingUrlRows() {
+  els.forwardingUrlList.replaceChildren();
+  forwardingUrls.forEach((url, index) => {
+    const entry = document.createElement("div");
+    entry.className = "forwarding-url-entry";
+    const row = document.createElement("div");
+    row.className = "forwarding-url-row";
+    const input = document.createElement("input");
+    input.className = "settings-input";
+    input.type = "url";
+    input.autocomplete = "off";
+    input.value = url;
+    input.placeholder = "https://billing-backend.dev.next.sc:7020/your-webhook-path";
+    input.setAttribute("aria-label", `Forwarding URL ${index + 1}`);
+    // A late startup response must not replace a field the user has entered.
+    input.addEventListener("focus", () => { forwardingEditVersion++; });
+    input.addEventListener("input", () => {
+      forwardingUrls[index] = input.value;
+      forwardingEditVersion++;
+      saveLocalForwardingUrls();
+      updateResendButton();
+      scheduleForwardingSave();
+    });
+    input.addEventListener("blur", () => {
+      clearTimeout(forwardingSaveTimer);
+      saveForwardWebhookUrls().catch(showForwardingSaveError);
+    });
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "icon-button forwarding-row-button add-forwarding-url";
+    add.textContent = "+";
+    add.title = "Add forwarding URL";
+    add.setAttribute("aria-label", "Add forwarding URL");
+    add.addEventListener("click", () => {
+      forwardingUrls.splice(index + 1, 0, "");
+      forwardingAuth.splice(index + 1, 0, { username: "", password: "" });
+      forwardingRowsChanged();
+      els.forwardingUrlList.querySelectorAll('input[type="url"]')[index + 1].focus();
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "icon-button forwarding-row-button remove-forwarding-url";
+    remove.textContent = "−";
+    remove.title = "Remove forwarding URL";
+    remove.setAttribute("aria-label", `Remove forwarding URL ${index + 1}`);
+    remove.disabled = forwardingUrls.length === 1;
+    remove.addEventListener("click", () => {
+      forwardingUrls.splice(index, 1);
+      forwardingAuth.splice(index, 1);
+      forwardingRowsChanged();
+    });
+    const authPanel = document.createElement("details");
+    authPanel.className = "forwarding-auth-panel";
+    const summary = document.createElement("summary");
+    summary.textContent = "Basic Auth";
+    const authFields = document.createElement("div");
+    authFields.className = "forwarding-auth-fields";
+    for (const field of ["username", "password"]) {
+      const label = document.createElement("label");
+      label.className = "field-label";
+      const caption = document.createElement("span");
+      caption.textContent = field === "username" ? "Username" : "Password";
+      const authInput = document.createElement("input");
+      authInput.className = "settings-input";
+      authInput.type = field === "password" ? "password" : "text";
+      authInput.autocomplete = "off";
+      authInput.value = forwardingAuth[index][field];
+      authInput.dataset.authField = field;
+      authInput.setAttribute("aria-label", `Forwarding URL ${index + 1} ${field}`);
+      authInput.addEventListener("focus", () => { forwardingEditVersion++; });
+      authInput.addEventListener("input", () => {
+        forwardingAuth[index][field] = authInput.value;
+        forwardingEditVersion++;
+        saveLocalForwardingUrls();
+        scheduleForwardingSave();
+      });
+      authInput.addEventListener("blur", () => {
+        clearTimeout(forwardingSaveTimer);
+        saveForwardWebhookUrls().catch(showForwardingSaveError);
+      });
+      label.append(caption, authInput);
+      authFields.append(label);
+    }
+    authPanel.append(summary, authFields);
+    const result = document.createElement("span");
+    result.className = "forwarding-url-result";
+    result.hidden = true;
+    row.append(input, add, remove);
+    entry.append(row, authPanel, result);
+    els.forwardingUrlList.append(entry);
+  });
+  renderForwardingRowResults();
+  updateResendButton();
+}
+
+function forwardingRowsChanged() {
+  forwardingEditVersion++;
+  saveLocalForwardingUrls();
+  renderForwardingUrlRows();
+  clearTimeout(forwardingSaveTimer);
+  saveForwardWebhookUrls().catch(showForwardingSaveError);
+}
+
+function showForwardingSaveError(error) {
+  els.forwardingStatus.textContent = `Forwarding: ${error.message}`;
+}
+
+function scheduleForwardingSave() {
+  clearTimeout(forwardingSaveTimer);
+  forwardingSaveTimer = setTimeout(() => saveForwardWebhookUrls().catch(showForwardingSaveError), 500);
+}
+
+function renderForwardingRowResults() {
+  const results = forwardingState?.lastResult?.results || [];
+  els.forwardingUrlList.querySelectorAll(".forwarding-url-result").forEach((element, index) => {
+    let configuredUrl = forwardingUrls[index]?.trim();
+    try { configuredUrl = new URL(configuredUrl).toString(); } catch {}
+    const result = results.find((item) => item.targetIndex === index && item.configuredUrl === configuredUrl);
+    element.hidden = !result;
+    element.textContent = result ? (result.error || `HTTP ${result.status}`) : "";
+    element.classList.toggle("failed", Boolean(result && !result.ok));
+    element.title = result?.url || "";
+  });
 }
 
 function renderForwardingStatus(state) {
   forwardingState = state;
   updateResendButton();
-  const url = state?.url || "";
+  renderForwardingRowResults();
+  if (!forwardingServerSupportsMultipleUrls) {
+    showForwardingSaveError(new Error("Restart the app to enable multiple forwarding URLs."));
+    return;
+  }
+  const urls = (state?.urls || [state?.url || ""]).filter(Boolean);
   const result = state?.lastResult;
-  els.forwardingStatus.title = result?.url || url;
-  if (!url) {
+  const results = result?.results || (result ? [result] : []);
+  els.forwardingStatus.title = results.length
+    ? results.map((item) => `${item.url || item.configuredUrl}: ${item.error || item.status}`).join("\n")
+    : urls.join("\n");
+  if (!urls.length) {
     els.forwardingStatus.textContent = "Forwarding: off";
-    return;
+  } else if (!result) {
+    els.forwardingStatus.textContent = urls.length === 1 ? "Forwarding: ready" : `Forwarding: ready (${urls.length} URLs)`;
+  } else if (results.length === 1) {
+    const single = results[0];
+    els.forwardingStatus.textContent = single.ok ? `Forwarded: ${single.status}` : `Forward failed: ${single.error || single.status || "unknown error"}`;
+  } else {
+    const succeeded = results.filter((item) => item.ok).length;
+    const failed = results.length - succeeded;
+    els.forwardingStatus.textContent = `Forwarded: ${succeeded}/${results.length}${failed ? ` · ${failed} failed` : ""}`;
   }
-  if (!result) {
-    els.forwardingStatus.textContent = "Forwarding: ready";
-    return;
-  }
-  if (result.ok) {
-    els.forwardingStatus.textContent = `Forwarded: ${result.status}`;
-    return;
-  }
-  els.forwardingStatus.textContent = `Forward failed: ${result.error || result.status || "unknown error"}`;
 }
 
-async function saveForwardWebhookUrl() {
-  const url = els.forwardWebhookUrlInput.value.trim();
-  localStorage.setItem(FORWARD_WEBHOOK_URL_STORAGE_KEY, url);
-  const response = await fetch("/forwarding/config", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ url }),
+function saveForwardWebhookUrls() {
+  if (!forwardingServerSupportsMultipleUrls) {
+    return Promise.reject(new Error("Restart the app to enable multiple forwarding URLs."));
+  }
+  const urls = forwardingUrls.map((url) => url.trim());
+  const auth = forwardingAuth.map((credentials) => ({ ...credentials }));
+  if (!forwardingServerSupportsBasicAuth && auth.some((credentials) => credentials.username || credentials.password)) {
+    return Promise.reject(new Error("Restart the app to enable forwarding Basic Auth."));
+  }
+  const version = forwardingEditVersion;
+  saveLocalForwardingUrls();
+  // Serialize saves so a slower old request cannot overwrite a newer edit.
+  const save = forwardingSaveQueue.catch(() => {}).then(async () => {
+    if (!forwardingServerSupportsMultipleUrls) {
+      throw new Error("Restart the app to enable multiple forwarding URLs.");
+    }
+    const response = await fetch("/forwarding/config", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ urls, auth }),
+    });
+    const state = await response.json();
+    if (!response.ok) throw new Error(state.error || "Unable to save forwarding URLs.");
+    if (!Array.isArray(state.urls)) {
+      forwardingServerSupportsMultipleUrls = false;
+      throw new Error("Restart the app to enable multiple forwarding URLs.");
+    }
+    if (auth.some((credentials) => credentials.username || credentials.password) && !state.supportsBasicAuth) {
+      forwardingServerSupportsBasicAuth = false;
+      throw new Error("Restart the app to enable forwarding Basic Auth.");
+    }
+    if (version === forwardingEditVersion) {
+      // Save responses update delivery status, never the user's draft or caret.
+      renderForwardingStatus(state);
+    }
   });
-  const state = await response.json();
-  if (!response.ok) throw new Error(state.error || "Unable to save forwarding URL.");
-  els.forwardWebhookUrlInput.value = state.url || "";
-  localStorage.setItem(FORWARD_WEBHOOK_URL_STORAGE_KEY, state.url || "");
-  renderForwardingStatus(state);
+  forwardingSaveQueue = save;
+  return save;
 }
 
-async function loadForwardWebhookUrl() {
+async function loadForwardWebhookUrls() {
+  const version = forwardingEditVersion;
   try {
     const response = await fetch("/forwarding/config");
     if (!response.ok) return;
     const state = await response.json();
-    const localUrl = localStorage.getItem(FORWARD_WEBHOOK_URL_STORAGE_KEY) || "";
-    if (!state.url && localUrl) {
-      els.forwardWebhookUrlInput.value = localUrl;
-      await saveForwardWebhookUrl();
+    if (!Array.isArray(state.urls)) {
+      forwardingServerSupportsMultipleUrls = false;
+      showForwardingSaveError(new Error("Restart the app to enable multiple forwarding URLs."));
       return;
     }
-    els.forwardWebhookUrlInput.value = state.url;
-    localStorage.setItem(FORWARD_WEBHOOK_URL_STORAGE_KEY, state.url);
+    forwardingServerSupportsMultipleUrls = true;
+    forwardingServerSupportsBasicAuth = Boolean(state.supportsBasicAuth);
+    if (version !== forwardingEditVersion) return;
+    const savedUrls = state.urls || [state.url || ""];
+    if (!savedUrls.some(Boolean) && forwardingUrls.some((url) => url.trim())) {
+      await saveForwardWebhookUrls();
+      return;
+    }
+    forwardingUrls = savedUrls;
+    forwardingAuth = savedUrls.map((_, index) => ({ username: String(state.auth?.[index]?.username || ""), password: String(state.auth?.[index]?.password || "") }));
+    saveLocalForwardingUrls();
+    renderForwardingUrlRows();
     renderForwardingStatus(state);
   } catch {
-    renderForwardingStatus({ url: els.forwardWebhookUrlInput.value });
+    renderForwardingStatus({ urls: forwardingUrls });
   }
 }
 
@@ -848,21 +1044,6 @@ els.clearAllButton.addEventListener("click", () => {
   if (window.confirm("Delete all stored webhooks from this browser?")) clearAll();
 });
 
-els.forwardWebhookUrlInput.addEventListener("input", () => {
-  clearTimeout(forwardingSaveTimer);
-  forwardingSaveTimer = setTimeout(() => {
-    saveForwardWebhookUrl().catch((error) => {
-      els.forwardingStatus.textContent = `Forwarding: ${error.message}`;
-    });
-  }, 500);
-});
-els.forwardWebhookUrlInput.addEventListener("blur", () => {
-  clearTimeout(forwardingSaveTimer);
-  saveForwardWebhookUrl().catch((error) => {
-    els.forwardingStatus.textContent = `Forwarding: ${error.message}`;
-  });
-});
-
 els.collapseSidebarButton.addEventListener("click", () => {
   setSidebarCollapsed(!els.appShell.classList.contains("sidebar-collapsed"));
 });
@@ -917,7 +1098,7 @@ loadSettings();
 syncAppHeight();
 render();
 renderListener();
-loadForwardWebhookUrl();
+loadForwardWebhookUrls();
 initMonacoEditor();
 connectEvents();
 
@@ -925,7 +1106,7 @@ window.addEventListener("resize", syncAppHeight);
 window.visualViewport?.addEventListener("resize", syncAppHeight);
 
 function updateResendButton() {
-  els.resendButton.disabled = resending || !selectedEvent() || !forwardingState?.url;
+  els.resendButton.disabled = resending || !selectedEvent() || !forwardingUrls.some((url) => url.trim());
   els.resendButton.textContent = resending ? "Resending…" : "Resend";
 }
 
@@ -936,7 +1117,7 @@ els.resendButton.addEventListener("click", async () => {
   updateResendButton();
   try {
     clearTimeout(forwardingSaveTimer);
-    await saveForwardWebhookUrl();
+    await saveForwardWebhookUrls();
     const response = await fetch("/forwarding/resend", {
       method: "POST",
       headers: { "content-type": "application/json" },

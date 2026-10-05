@@ -70,12 +70,12 @@
             <section class="control-section">
               <div class="control-section-head">
                 <span>Webhook forwarding</span>
-                <button class="text-button mini" id="resendButton" type="button" disabled title="Resend selected webhook to the forwarding URL">Resend</button>
+                <button class="text-button mini" id="resendButton" type="button" disabled title="Resend selected webhook to all forwarding URLs">Resend</button>
               </div>
-              <label class="field-label">
+              <div class="field-label">
                 <span>Forward webhook to</span>
-                <input id="forwardWebhookUrlInput" class="settings-input" type="url" autocomplete="off" placeholder="https://billing-backend.dev.next.sc:7020/your-webhook-path" />
-              </label>
+                <div id="forwardingUrlList" class="forwarding-url-list"></div>
+              </div>
             </section>
           </div>
         </details>

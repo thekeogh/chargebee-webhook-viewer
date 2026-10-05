@@ -34,7 +34,8 @@ const listener = {
   logs: [],
 };
 const forwarding = {
-  url: "",
+  urls: [""],
+  auth: [{ username: "", password: "" }],
   lastResult: null,
 };
 
@@ -67,9 +68,11 @@ function safeJsonParse(raw) {
 function loadForwardingConfig() {
   try {
     const saved = JSON.parse(fs.readFileSync(FORWARDING_CONFIG_PATH, "utf8"));
-    forwarding.url = normalizeForwardingUrl(saved?.url || "");
+    forwarding.urls = normalizeForwardingUrls(saved?.urls ?? [saved?.url || ""]);
+    forwarding.auth = normalizeForwardingAuth(saved?.auth, forwarding.urls.length);
   } catch {
-    forwarding.url = "";
+    forwarding.urls = [""];
+    forwarding.auth = normalizeForwardingAuth(null, 1);
   }
 }
 
@@ -83,13 +86,32 @@ function normalizeForwardingUrl(value) {
   return parsed.toString();
 }
 
-function saveForwardingConfig(url) {
-  fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  fs.writeFileSync(FORWARDING_CONFIG_PATH, `${JSON.stringify({ url }, null, 2)}\n`, "utf8");
+function normalizeForwardingUrls(values) {
+  if (!Array.isArray(values)) throw new Error("Forwarding URLs must be an array.");
+  return values.length ? values.map(normalizeForwardingUrl) : [""];
 }
 
-function forwardingSnapshot() {
-  return { url: forwarding.url, lastResult: forwarding.lastResult };
+function normalizeForwardingAuth(values, length) {
+  if (values != null && !Array.isArray(values)) throw new Error("Forwarding auth must be an array.");
+  return Array.from({ length }, (_, index) => ({
+    username: String(values?.[index]?.username || ""),
+    password: String(values?.[index]?.password || ""),
+  }));
+}
+
+function saveForwardingConfig(urls, auth) {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(FORWARDING_CONFIG_PATH, `${JSON.stringify({ urls, auth }, null, 2)}\n`, "utf8");
+}
+
+function forwardingSnapshot(includeAuth = false) {
+  return {
+    urls: forwarding.urls,
+    url: forwarding.urls.find(Boolean) || "",
+    supportsBasicAuth: true,
+    ...(includeAuth ? { auth: forwarding.auth } : {}),
+    lastResult: forwarding.lastResult,
+  };
 }
 
 function pushForwardingUpdate() {
@@ -101,6 +123,7 @@ function forwardedHeaders(headers) {
     "connection",
     "content-length",
     "host",
+    "authorization",
     "keep-alive",
     "proxy-authenticate",
     "proxy-authorization",
@@ -139,48 +162,54 @@ function postForwardedWebhook(destination, headers, rawBody) {
   });
 }
 
-async function forwardWebhook({ sourceUrl, headers, rawBody, eventId }) {
-  if (!forwarding.url) return;
-
-  const destination = new URL(forwarding.url);
+async function forwardWebhookTo(url, { sourceUrl, headers, rawBody, eventId }, targetIndex, auth) {
+  const destination = new URL(url);
+  // Authentication comes only from this destination's fields.
+  destination.username = "";
+  destination.password = "";
   // Append the original query verbatim: encoding, duplicate keys and order matter.
   const queryStart = sourceUrl.indexOf("?");
   if (queryStart !== -1 && sourceUrl.slice(queryStart + 1)) {
     destination.search += `${destination.search ? "&" : "?"}${sourceUrl.slice(queryStart + 1)}`;
   }
-
+  const details = { eventId, configuredUrl: url, url: destination.toString(), targetIndex };
   const localHosts = new Set([HOST, "localhost", "127.0.0.1", "[::1]"]);
   const forwardedToSelf = (localHosts.has(destination.hostname) &&
     Number(destination.port || (destination.protocol === "https:" ? 443 : 80)) === PORT) ||
     destination.origin === new URL(NGROK_URL).origin;
   if (forwardedToSelf) {
-    forwarding.lastResult = { ok: false, at: new Date().toISOString(), eventId, error: "Refusing to forward back to this viewer." };
-    pushForwardingUpdate();
-    return forwarding.lastResult;
+    return { ...details, ok: false, at: new Date().toISOString(), error: "Refusing to forward back to this viewer." };
   }
-
   try {
     const response = await postForwardedWebhook(destination, {
       ...forwardedHeaders(headers),
+      ...(auth.username && auth.password ? { authorization: `Basic ${Buffer.from(`${auth.username}:${auth.password}`, "utf8").toString("base64")}` } : {}),
       "x-chargebee-webhook-viewer-forwarded": "1",
     }, rawBody);
-    forwarding.lastResult = {
+    return {
+      ...details,
       ok: response.statusCode >= 200 && response.statusCode < 300,
       at: new Date().toISOString(),
-      eventId,
       status: response.statusCode,
       statusText: response.statusMessage,
-      url: destination.toString(),
     };
   } catch (error) {
-    forwarding.lastResult = {
-      ok: false,
-      at: new Date().toISOString(),
-      eventId,
-      url: destination.toString(),
-      error: error.message,
-    };
+    return { ...details, ok: false, at: new Date().toISOString(), error: error.message };
   }
+}
+
+async function forwardWebhook(webhook) {
+  const targets = forwarding.urls.map((url, targetIndex) => ({ url, targetIndex, auth: { ...forwarding.auth[targetIndex] } })).filter(({ url }) => Boolean(url));
+  if (!targets.length) return;
+  // Each destination gets its own request; failures do not prevent other deliveries.
+  const results = await Promise.all(targets.map(({ url, targetIndex, auth }) => forwardWebhookTo(url, webhook, targetIndex, auth)));
+  forwarding.lastResult = {
+    ...(results.length === 1 ? results[0] : {}),
+    ok: results.every((result) => result.ok),
+    at: new Date().toISOString(),
+    eventId: webhook.eventId,
+    results,
+  };
   pushForwardingUpdate();
   return forwarding.lastResult;
 }
@@ -478,7 +507,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (requestUrl.pathname === "/forwarding/config" && req.method === "GET") {
-    send(res, 200, forwardingSnapshot());
+    send(res, 200, forwardingSnapshot(true));
     return;
   }
 
@@ -490,11 +519,14 @@ const server = http.createServer(async (req, res) => {
         send(res, 400, { error: "Request body must be JSON." });
         return;
       }
-      const url = normalizeForwardingUrl(json.parsed.url);
-      saveForwardingConfig(url);
-      forwarding.url = url;
+      const urls = normalizeForwardingUrls(json.parsed.urls ?? [json.parsed.url || ""]);
+      const auth = normalizeForwardingAuth(json.parsed.auth, urls.length);
+      saveForwardingConfig(urls, auth);
+      if (JSON.stringify({ urls: forwarding.urls, auth: forwarding.auth }) !== JSON.stringify({ urls, auth })) forwarding.lastResult = null;
+      forwarding.urls = urls;
+      forwarding.auth = auth;
       pushForwardingUpdate();
-      send(res, 200, forwardingSnapshot());
+      send(res, 200, forwardingSnapshot(true));
     } catch (error) {
       send(res, 400, { error: error.message });
     }
@@ -521,8 +553,8 @@ const server = http.createServer(async (req, res) => {
         send(res, 400, { error: "A stored webhook body, path and headers are required." });
         return;
       }
-      if (!forwarding.url) {
-        send(res, 400, { error: "Set a forwarding URL first." });
+      if (!forwarding.urls.some(Boolean)) {
+        send(res, 400, { error: "Set at least one forwarding URL first." });
         return;
       }
       const result = await forwardWebhook(replay);
