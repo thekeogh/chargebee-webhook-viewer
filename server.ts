@@ -5,7 +5,8 @@ const https = require("https");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
-const { spawn } = require("child_process");
+const { spawn, execFile } = require("child_process");
+const execFileAsync = require("util").promisify(execFile);
 
 const PORT = Number(process.env.PORT || 4343);
 const HOST = process.env.HOST || "localhost";
@@ -260,8 +261,39 @@ function addListenerLog(stream, chunk) {
   pushListenerUpdate();
 }
 
+let ngrokStartPromise: Promise<any> | null = null;
+let ngrokStartGeneration = 0;
+
+async function forceKillExistingNgrok() {
+  const { stdout } = await execFileAsync("ps", ["-axo", "pid=,args="]);
+  for (const line of stdout.split("\n")) {
+    const match = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/);
+    if (!match || path.basename(match[2]) !== "ngrok") continue;
+    const pid = Number(match[1]);
+    const args = match[3];
+    const url = args.match(/(?:^|\s)--url(?:=|\s+)(\S+)/)?.[1];
+    const config = args.match(/(?:^|\s)--config(?:=|\s+)(\S+)/)?.[1];
+    // Match this endpoint, or a config-driven agent using this config file.
+    const matchesTunnel = url
+      ? url.replace(/\/$/, "") === NGROK_URL.replace(/\/$/, "")
+      : config?.split(",").includes(NGROK_CONFIG);
+    if (!matchesTunnel || pid === process.pid) continue;
+    try {
+      process.kill(pid, "SIGKILL");
+      addListenerLog("system", Buffer.from(`Force-killed existing ngrok PID ${pid}`));
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+  }
+  // Let the previous agent's connection close before reclaiming its endpoint.
+  await new Promise((resolve) => setTimeout(resolve, 500));
+}
+
 function startNgrokListener() {
-  if (listener.process) return listenerSnapshot();
+  if (ngrokStartPromise) return ngrokStartPromise;
+  const generation = ++ngrokStartGeneration;
+  const previous = listener.process;
+  listener.process = null;
 
   listener.status = "starting";
   listener.pid = null;
@@ -271,6 +303,31 @@ function startNgrokListener() {
   listener.logs = [];
   pushListenerUpdate();
 
+  ngrokStartPromise = (async () => {
+    if (previous) {
+      const closed = new Promise<void>((resolve) => previous.once("close", resolve));
+      previous.kill("SIGKILL");
+      addListenerLog("system", Buffer.from(`Force-killed previous ngrok PID ${previous.pid}`));
+      await closed;
+    }
+    await forceKillExistingNgrok();
+    if (generation !== ngrokStartGeneration || shuttingDown) return listenerSnapshot();
+    return spawnNgrokListener();
+  })().catch((error) => {
+    if (generation === ngrokStartGeneration) {
+      listener.status = "error";
+      listener.stoppedAt = new Date().toISOString();
+      listener.lastExit = { error: error.message };
+      addListenerLog("system", Buffer.from(error.message));
+    }
+    return listenerSnapshot();
+  }).finally(() => {
+    ngrokStartPromise = null;
+  });
+  return ngrokStartPromise;
+}
+
+function spawnNgrokListener() {
   const child = spawn("ngrok", NGROK_LISTEN_ARGS, {
     cwd: PROJECT_ROOT,
     env: process.env,
@@ -282,6 +339,7 @@ function startNgrokListener() {
 
   const pending = { stdout: "", stderr: "" };
   function consumeOutput(stream, chunk) {
+    if (listener.process !== child) return;
     pending[stream] += chunk.toString("utf8");
     const lines = pending[stream].split(/\r?\n/);
     pending[stream] = lines.pop() || "";
@@ -291,11 +349,13 @@ function startNgrokListener() {
   child.stderr.on("data", (chunk) => consumeOutput("stderr", chunk));
 
   child.on("spawn", () => {
+    if (listener.process !== child) return;
     listener.pid = child.pid;
     addListenerLog("system", Buffer.from(`Started ngrok tunnel with PID ${child.pid}`));
   });
 
   child.on("error", (error) => {
+    if (listener.process !== child) return;
     listener.status = "error";
     listener.process = null;
     listener.pid = null;
@@ -305,6 +365,7 @@ function startNgrokListener() {
   });
 
   child.on("exit", (code, signal) => {
+    if (listener.process !== child) return;
     for (const stream of ["stdout", "stderr"]) {
       if (pending[stream]) addListenerLog(stream, Buffer.from(pending[stream]));
     }
@@ -320,6 +381,7 @@ function startNgrokListener() {
 }
 
 function stopNgrokListener() {
+  ++ngrokStartGeneration;
   if (!listener.process) {
     listener.status = "stopped";
     listener.pid = null;
@@ -440,7 +502,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (requestUrl.pathname === "/listener/start" && req.method === "POST") {
-    send(res, 200, startNgrokListener());
+    send(res, 200, await startNgrokListener());
     return;
   }
 
@@ -530,11 +592,63 @@ const server = http.createServer(async (req, res) => {
 
 loadForwardingConfig();
 
-server.listen(PORT, HOST, () => {
+function listen() {
+  return new Promise<void>((resolve, reject) => {
+    const onError = (error) => {
+      server.removeListener("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.removeListener("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(PORT, HOST);
+  });
+}
+
+async function forceFreePort() {
+  let stdout = "";
+  try {
+    ({ stdout } = await execFileAsync("lsof", ["-nP", "-t", `-iTCP:${PORT}`, "-sTCP:LISTEN"]));
+  } catch (error) {
+    // lsof exits 1 when the previous listener has already gone away.
+    if (error.code !== 1 || error.stdout?.trim() || error.stderr?.trim()) throw error;
+  }
+  const pids = [...new Set<number>(stdout.trim().split(/\s+/).map(Number))]
+    .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL");
+      console.log(`Port ${PORT}: force-killed PID ${pid}`);
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+  }
+}
+
+async function startServer() {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await listen();
+      break;
+    } catch (error) {
+      if (error.code !== "EADDRINUSE" || attempt >= 10) throw error;
+      if (attempt === 0) await forceFreePort();
+      // Give the OS time to release the killed listener's socket.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
   const appUrl = `http://${HOST}:${PORT}`;
   console.log(`Chargebee webhook viewer: ${appUrl}`);
   console.log(`Tunnel command: ${NGROK_LISTEN_COMMAND}`);
   openBrowser(appUrl);
+}
+
+startServer().catch((error) => {
+  console.error(`Unable to start Chargebee webhook viewer: ${error.message}`);
+  process.exit(1);
 });
 
 let shuttingDown = false;

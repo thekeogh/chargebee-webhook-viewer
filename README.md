@@ -16,9 +16,15 @@ pnpm start
 Opens `http://localhost:4343` automatically. `pnpm start` builds before starting.
 For development, use `pnpm dev`.
 
+If the configured port is occupied, startup force-kills its TCP listeners
+with SIGKILL, then retries. This also applies to `pnpm dev` and custom `PORT`
+values. Requires `lsof` (included on macOS).
+
 ## Receive webhooks
 
 Open **Chargebee controls**, then **Start** to run ngrok in the background.
+Start force-kills any existing local ngrok agent using this endpoint (or this
+config file without an explicit endpoint), then launches a fresh agent.
 The app shows tunnel status and output. **Stop** stops the tunnel; quitting the
 app also stops its ngrok process.
 
