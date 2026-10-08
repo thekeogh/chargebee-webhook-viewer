@@ -1140,3 +1140,41 @@ body.resizing-sidebar {
   gap: 7px;
   padding: 7px 0 4px;
 }
+
+.copy-selection-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.copy-selection-tools[hidden],
+.hook-copy-checkbox[hidden] {
+  display: none;
+}
+
+.copy-selection-tools span {
+  margin-right: auto;
+}
+
+.hook-copy-checkbox {
+  flex: 0 0 auto;
+  align-self: center;
+  margin: 0 0 0 10px;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.event-item.copy-checked {
+  background: rgba(255, 131, 0, 0.12);
+}
+
+#toggleCopySelectionButton[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent-cyan);
+}

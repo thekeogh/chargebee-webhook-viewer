@@ -25,6 +25,11 @@ const els: Record<string, any> = {
   metadataSummary: document.querySelector("#metadataSummary"),
   copyBodyButton: document.querySelector("#copyBodyButton"),
   copyObjectButton: document.querySelector("#copyObjectButton"),
+  toggleCopySelectionButton: document.querySelector("#toggleCopySelectionButton"),
+  copySelectionTools: document.querySelector("#copySelectionTools"),
+  copySelectionCount: document.querySelector("#copySelectionCount"),
+  selectAllHooksButton: document.querySelector("#selectAllHooksButton"),
+  clearHookSelectionButton: document.querySelector("#clearHookSelectionButton"),
   collapseAllGroupsButton: document.querySelector("#collapseAllGroupsButton"),
   clearAllButton: document.querySelector("#clearAllButton"),
   forwardingUrlList: document.querySelector("#forwardingUrlList"),
@@ -49,6 +54,8 @@ const els: Record<string, any> = {
 
 let events = loadEvents();
 let selectedId = events[0]?.id || null;
+let copySelectionMode = false;
+const checkedHookIds = new Set<string>();
 let listenerState = null;
 let isResizingSidebar = false;
 let editor = null;
@@ -432,8 +439,13 @@ function groupTitleFor(event) {
 
 function eventPrefixFor(eventType) {
   const type = String(eventType || "Webhook events");
-  // Keep compound resource names together (credit_note, item_price, etc.).
-  const resources = ["subscription_entitlement", "unbilled_charge", "promotional_credit", "payment_source", "payment_intent", "credit_note", "item_family", "item_price", "gift", "subscription", "customer", "invoice", "transaction", "coupon", "item", "quote", "order", "entitlement"];
+  // Remove action phrases, preserving every word in compound resource names.
+  const workflowAction = /_(?:scheduled_(?:changes|cancellation|pause|resumption)_removed|changes_scheduled|cancellation_scheduled|cancellation_reminder|pause_scheduled|resumption_scheduled|trial_end_reminder|renewal_reminder|expiry_reminder|ready_to_process|ready_to_ship)$/;
+  const action = /_(?:auto_)?(?:created|updated|deleted|activated|reactivated|archived|added|removed|changed|started|cancelled|canceled|renewed|paused|resumed|scheduled|succeeded|failed|refunded|initiated|generated|voided|expired|expiring|consumed|invoiced|delivered|returned|resent|recorded|deducted|claimed|unclaimed|terminated|completed|moved_in|moved_out)(?:_with_backdating)?$/;
+  const resource = type.replace(workflowAction, "").replace(action, "");
+  if (resource !== type) return resource;
+  // Keep the existing fallback for action names we do not recognise yet.
+  const resources = ["subscription_entitlements", "subscription_entitlement", "item_price_entitlements", "item_entitlements", "entitlement_overrides", "unbilled_charge", "promotional_credit", "payment_source", "payment_intent", "credit_note", "item_family", "item_price", "gift", "subscription", "customer", "invoice", "transaction", "coupon", "item", "quote", "order", "entitlement"];
   return resources.find((resource) => type === resource || type.startsWith(`${resource}_`)) || type.split("_")[0];
 }
 
@@ -595,6 +607,37 @@ function selectedEvent() {
   return events.find((event) => event.id === selectedId) || null;
 }
 
+function checkedHooks() {
+  return groupEvents(events).flatMap((group) => group.events).filter((event) => checkedHookIds.has(event.id));
+}
+
+function updateCopyControls() {
+  const availableIds = new Set(events.map((event) => event.id));
+  for (const id of checkedHookIds) if (!availableIds.has(id)) checkedHookIds.delete(id);
+  const hooks = checkedHooks();
+  const event = selectedEvent();
+  els.copySelectionTools.hidden = !copySelectionMode;
+  els.toggleCopySelectionButton.setAttribute("aria-pressed", String(copySelectionMode));
+  els.toggleCopySelectionButton.textContent = copySelectionMode ? "Done selecting" : "Select hooks";
+  els.copySelectionCount.textContent = `${hooks.length} selected`;
+  els.selectAllHooksButton.disabled = !events.length;
+  els.clearHookSelectionButton.disabled = !hooks.length;
+  els.copyBodyButton.disabled = copySelectionMode ? !hooks.length : !event;
+  els.copyObjectButton.disabled = copySelectionMode ? !hooks.length || hooks.some((hook) => !hook.body?.content) : !event?.body?.content;
+  els.copyBodyButton.title = copySelectionMode ? `Copy full JSON for ${hooks.length} selected hooks` : "Copy full JSON";
+  els.copyObjectButton.title = copySelectionMode && hooks.some((hook) => !hook.body?.content)
+    ? "All checked hooks must have content to use Copy Content"
+    : copySelectionMode ? `Copy content for ${hooks.length} selected hooks` : "Copy content";
+}
+
+function stringifyCheckedHooks(contentOnly) {
+  return checkedHooks().map((event) => {
+    const title = titleFor(event).replace(/[\r\n\u2028\u2029]+/g, " ");
+    const payload = contentOnly ? JSON.stringify(event.body.content, null, 2) : stringifyPayload(event);
+    return `// ${title}\n${payload}`;
+  }).join("\n\n");
+}
+
 function ensureGroupOpenForEvent(event) {
   const type = groupTitleFor(event);
   if (!type) return;
@@ -709,6 +752,18 @@ function renderList() {
       titleInput.value = titleFor(event);
       titleInput.placeholder = defaultTitleFor(event);
       node.querySelector(".event-sub").textContent = subtitleFor(event);
+      const checkbox = node.querySelector(".hook-copy-checkbox");
+      checkbox.hidden = !copySelectionMode;
+      checkbox.checked = checkedHookIds.has(event.id);
+      checkbox.setAttribute("aria-label", `Select ${titleFor(event)} for copying`);
+      node.classList.toggle("copy-checked", checkbox.checked);
+      checkbox.addEventListener("click", (clickEvent) => clickEvent.stopPropagation());
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) checkedHookIds.add(event.id);
+        else checkedHookIds.delete(event.id);
+        node.classList.toggle("copy-checked", checkbox.checked);
+        updateCopyControls();
+      });
 
       node.addEventListener("click", () => {
         selectedId = event.id;
@@ -792,6 +847,7 @@ function renderList() {
 function renderSelected() {
   const event = selectedEvent();
   updateResendButton();
+  updateCopyControls();
 
   if (!event) {
     els.selectedTime.textContent = "Waiting for webhook";
@@ -799,8 +855,6 @@ function renderSelected() {
     els.metadataSummary.textContent = "No request selected";
     els.metadataCode.textContent = "";
     setEditorValue(editorValueFor(null));
-    els.copyBodyButton.disabled = true;
-    els.copyObjectButton.disabled = true;
     return;
   }
 
@@ -825,8 +879,6 @@ function renderSelected() {
   ].filter(Boolean).join(" · ");
   els.metadataCode.innerHTML = highlightedJson(metadata);
   setEditorValue(editorValueFor(event));
-  els.copyBodyButton.disabled = false;
-  els.copyObjectButton.disabled = !event.body?.content;
 }
 
 function render() {
@@ -1026,15 +1078,40 @@ async function postListenerAction(action) {
 }
 
 els.copyBodyButton.addEventListener("click", () => {
-  if (!editor) return;
-  copyText(editor.getValue(), els.copyBodyButton);
+  if (copySelectionMode) {
+    if (checkedHooks().length) copyText(stringifyCheckedHooks(false), els.copyBodyButton);
+  } else if (selectedEvent()) {
+    copyText(editor?.getValue() || stringifyPayload(selectedEvent()), els.copyBodyButton);
+  }
 });
 
 els.copyObjectButton.addEventListener("click", () => {
+  if (copySelectionMode) {
+    const hooks = checkedHooks();
+    if (hooks.length && hooks.every((event) => event.body?.content)) copyText(stringifyCheckedHooks(true), els.copyObjectButton);
+    return;
+  }
   const event = selectedEvent();
   const content = event?.body?.content;
   if (!content) return;
   copyText(JSON.stringify(content, null, 2), els.copyObjectButton);
+});
+
+els.toggleCopySelectionButton.addEventListener("click", () => {
+  copySelectionMode = !copySelectionMode;
+  if (copySelectionMode) setSidebarCollapsed(false);
+  if (!copySelectionMode) checkedHookIds.clear();
+  render();
+});
+
+els.selectAllHooksButton.addEventListener("click", () => {
+  for (const event of events) checkedHookIds.add(event.id);
+  render();
+});
+
+els.clearHookSelectionButton.addEventListener("click", () => {
+  checkedHookIds.clear();
+  render();
 });
 
 els.collapseAllGroupsButton.addEventListener("click", collapseAllGroups);

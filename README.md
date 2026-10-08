@@ -85,6 +85,11 @@ supported. Delivery status appears in the footer.
 - Persisted folder/hook drag ordering and collapsed sections.
 - Read-only Monaco JSON editor, folding, find, minimap and copy controls.
 - **Copy JSON** copies the displayed payload; **Copy Content** copies `content`.
+- **Select hooks** reveals checkboxes for copying several hooks. Check individual
+  hooks or use **Select all**, then **Copy Content** or **Copy JSON**. Each payload
+  is preceded by `// hook title`, separated by a blank line, in sidebar order.
+  **Done selecting** returns to normal copying. Hooks without `content` can be
+  included with **Copy JSON**; **Copy Content** requires content on every checked hook.
 - Request metadata, headers, received time and Chargebee event metadata.
 - Persisted sidebar sizing, collapse state and control panel preferences.
 - Orange theme and Chargebee favicon; separate storage from the Stripe app.

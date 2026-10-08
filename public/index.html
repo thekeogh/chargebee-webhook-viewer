@@ -80,6 +80,11 @@
           </div>
         </details>
 
+        <div class="copy-selection-tools" id="copySelectionTools" hidden>
+          <span id="copySelectionCount" aria-live="polite">0 selected</span>
+          <button class="text-button mini" id="selectAllHooksButton" type="button">Select all</button>
+          <button class="text-button mini" id="clearHookSelectionButton" type="button">Clear</button>
+        </div>
         <ol class="event-list" id="eventList" aria-label="Received webhooks"></ol>
         <div class="resize-handle" id="resizeHandle" role="separator" aria-orientation="vertical" aria-label="Resize sidebar"></div>
       </aside>
@@ -93,6 +98,7 @@
           <div class="viewer-actions">
             <button class="action-button" id="copyBodyButton" type="button" disabled>Copy JSON</button>
             <button class="action-button" id="copyObjectButton" type="button" disabled>Copy Content</button>
+            <button class="action-button" id="toggleCopySelectionButton" type="button" aria-pressed="false" title="Select multiple webhooks to copy">Select hooks</button>
           </div>
         </header>
 
@@ -132,6 +138,7 @@
 
     <template id="eventItemTemplate">
       <li class="event-item">
+        <input class="hook-copy-checkbox" type="checkbox" hidden />
         <div class="event-content">
           <div class="event-title-row">
             <span class="event-main"></span>
